@@ -63,7 +63,24 @@ JOBS = [
 ]
 TOP_COMPANIES = {"현대자동차", "현대중공업", "SK에너지", "삼성전자", "LG화학", "S-OIL", "포스코", "네이버", "카카오",
                  "KB국민은행", "신한은행", "삼성증권", "현대건설"}
-OFFICE_POSITIONS = ["사원", "대리", "과장", "차장", "부장", "이사", "대표", "교사", "교수", "원장", "변호사", "팀장"]
+# 직위 후보: (직종, 근무지명에 포함된 단어 또는 None) → 직위 목록. 위에서부터 처음 맞는 규칙을 쓴다.
+OFFICE_POSITIONS = [
+    ("교육자", "대학교", ["교수", "부교수", "조교수"]),
+    ("교육자", "학교", ["교사", "교감", "교장"]),
+    ("교육자", None, ["강사", "이사"]),
+    ("의료인", "병원", ["전문의", "의사", "간호사", "간호부장"]),
+    ("의료인", None, ["원장", "부원장"]),
+    ("법조인", "검찰청", ["검사", "수사관"]),
+    ("법조인", None, ["변호사", "파트너 변호사"]),
+    ("공무원", "법원", ["법원주사", "법원사무관"]),
+    ("공무원", None, ["주무관", "사무관", "팀장", "과장"]),
+    ("자영업", None, ["대표"]),
+    ("건축가", "건축사사무소", ["건축사", "소장"]),
+    ("금융인", "증권", ["사원", "대리", "과장", "지점장"]),
+    ("금융인", None, ["행원", "대리", "과장", "차장", "지점장"]),
+    ("IT 개발자", None, ["사원", "선임", "책임", "수석", "팀장"]),
+    (None, None, ["사원", "대리", "과장", "차장", "부장", "이사"]),  # 회사원, 건설사 건축가 등
+]
 
 CIRCLES = ["산악회", "축구회", "골프회", "밴드부", "사진동아리", "봉사동아리", "독서회", "바둑회"]
 
@@ -87,6 +104,12 @@ UNIQUE_POSITIONS = [
     ("orgmem_executive", "울산동문회장", "울산"),
 ]
 REGION_WORDS = ["서울", "울산", "부산", "대구", "경남", "경기"]
+
+
+def pick_position(rng, jobtype, office):
+    for job, keyword, positions in OFFICE_POSITIONS:
+        if job in (None, jobtype) and (keyword is None or keyword in office):
+            return rng.choice(positions)
 
 
 def make_name(rng):
@@ -144,7 +167,7 @@ def make_member(rng, idx):
         "orgmem_area_work": area,
         "jobtype": jobtype,
         "orgmem_office_nm": office,
-        "orgmem_position": rng.choice(OFFICE_POSITIONS),
+        "orgmem_position": pick_position(rng, jobtype, office),
         "orgmem_office_addr_zipcode": office_zip,
         "orgmem_office_addr1": office_addr1,
         "orgmem_office_addr2": f"{rng.randint(1, 20)}층",
