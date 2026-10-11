@@ -3,17 +3,16 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 import asyncio
-from fastapi import FastAPI, HTTPException, Request, Form, Depends
-from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
+from fastapi import FastAPI, HTTPException, Form, Depends
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, Session
 from typing import List
 
-from chain import init_database, get_response
+from chain import init_database, get_response, stream_response
 from langchain_community.utilities import SQLDatabase
 
 app = FastAPI()
@@ -26,10 +25,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# HTML 템플릿을 렌더링하기 위한 설정
-# directory의 폴더에서 HTML 파일을 찾음
-templates = Jinja2Templates(directory="../frontend/public")
 
 # 환경 변수 로드
 load_dotenv()
@@ -51,24 +46,43 @@ class User(BaseModel):
     question: str
     chat_history: List[str]
 
-@app.get("/", response_class=HTMLResponse) # 메인화면 구성
-async def read_index(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+@app.get("/") # 서버 상태 확인용
+async def health_check():
+    return {"status": "ok"}
 
+# LLM·DB 호출이 동기 방식이므로 async 대신 def 로 선언해 스레드풀에서 실행 (다른 요청을 막지 않도록)
 @app.post("/ask")
-async def ask_question(user: User, db: SQLDatabase = Depends(get_db)):
+def ask_question(user: User, db: SQLDatabase = Depends(get_db)):
     try:
         # 사용자의 질문에 대한 응답 생성
         response = get_response(user.question, db, user.chat_history)
         return {"question": user.question, "answer": response}
-        
-        # async def stream_response():
-        #     async for chunk in get_response(user_question.question, db, chat_history):
-        #         yield chunk
-        #         await asyncio.sleep(0.1)
-        # return StreamingResponse(stream_response(), media_type="text/event-stream")
     
     except Exception as e:
         print(str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+# 답변을 생성되는 대로 text/plain 청크로 전송
+@app.post("/ask/stream")
+def ask_question_stream(user: User, db: SQLDatabase = Depends(get_db)):
+    chunks = stream_response(user.question, db, user.chat_history)
+    
+    # 첫 청크는 SQL 생성·실행이 끝나야 나오므로 미리 받아 둔다.
+    # 이 단계의 오류는 응답 시작 전이라 일반 500 에러로 돌려줄 수 있다.
+    try:
+        first_chunk = next(chunks, "")
+    except Exception as e:
+        print(str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    def generate():
+        yield first_chunk
+        try:
+            yield from chunks
+        except Exception as e:
+            # 응답이 이미 시작되어 상태 코드를 바꿀 수 없으므로 본문에 오류를 덧붙인다.
+            print(str(e))
+            yield f"\n\n(답변 중 오류가 발생했습니다: {e})"
+    
+    return StreamingResponse(generate(), media_type="text/plain; charset=utf-8")
 

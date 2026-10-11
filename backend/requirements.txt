@@ -1,7 +1,6 @@
 # 웹 서버
 fastapi>=0.115
 uvicorn>=0.30
-jinja2>=3.1           # fastapi.templating.Jinja2Templates
 python-dotenv>=1.0
 
 # DB
