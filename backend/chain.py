@@ -1,4 +1,5 @@
 import ast
+import os
 import re
 from functools import lru_cache
 
@@ -9,7 +10,8 @@ from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 
 from prompts import ANSWER_PROMPT, COLUMN_DESCRIPTIONS, SQL_PROMPT
 
-LLM_MODEL = "gemini-1.5-pro"
+# .env 의 GEMINI_MODEL 로 변경 가능
+DEFAULT_LLM_MODEL = "gemini-3.1-flash-lite"
 
 # 한 번에 보여줄 최대 회원 수 (SQL의 LIMIT)
 MAX_ROWS = 20
@@ -76,8 +78,11 @@ def build_chain(db: SQLDatabase):
     )
     answer_prompt = ANSWER_PROMPT.partial(max_rows=str(MAX_ROWS))
 
-    sql_llm = ChatGoogleGenerativeAI(model=LLM_MODEL, temperature=0, max_output_tokens=600)
-    answer_llm = ChatGoogleGenerativeAI(model=LLM_MODEL, temperature=0, max_output_tokens=4096)
+    # main.py 의 load_dotenv() 이후에 읽도록 체인을 만들 때 조회한다.
+    model = os.getenv("GEMINI_MODEL") or DEFAULT_LLM_MODEL
+    # Gemini 3 모델은 추론(thinking) 토큰도 출력 한도에 포함되므로 여유 있게 잡는다.
+    sql_llm = ChatGoogleGenerativeAI(model=model, temperature=0, max_output_tokens=2048)
+    answer_llm = ChatGoogleGenerativeAI(model=model, temperature=0, max_output_tokens=4096)
 
     sql_chain = (
         sql_prompt

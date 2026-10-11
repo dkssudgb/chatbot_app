@@ -1,7 +1,6 @@
 import os
 from pathlib import Path
 from dotenv import load_dotenv
-import markdown2
 
 import asyncio
 from fastapi import FastAPI, HTTPException, Request, Form, Depends
