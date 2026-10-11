@@ -39,7 +39,8 @@ load_dotenv()
 
 # 기본값: 저장소의 샘플 DB (python db/seed.py 로 생성)
 DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "db" / "members.db"
-DATABASE_URL = os.getenv('DATABASE_URL') or f"sqlite:///{DEFAULT_DB_PATH}"
+# mode=ro: 챗봇은 조회만 하므로 읽기 전용으로 연결
+DATABASE_URL = os.getenv('DATABASE_URL') or f"sqlite:///file:{DEFAULT_DB_PATH}?mode=ro&uri=true"
 
 # 데이터베이스 (앱 시작 시 한 번만 연결하고 재사용)
 db = init_database(DATABASE_URL)
