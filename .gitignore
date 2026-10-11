@@ -43,3 +43,4 @@ __pycache__/
 
 # sample database (python db/seed.py)
 *.db
+.pytest_cache/
