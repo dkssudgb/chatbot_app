@@ -30,7 +30,17 @@ yarn-error.*
 *.pem
 
 # local env files
+.env
 .env*.local
+!.env.example
+
+# python
+__pycache__/
+*.pyc
 
 # typescript
 *.tsbuildinfo
+
+# sample database (python db/seed.py)
+*.db
+.pytest_cache/
