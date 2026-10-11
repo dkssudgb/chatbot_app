@@ -19,6 +19,10 @@ const API_URL = process.env.EXPO_PUBLIC_API_URL || 'http://localhost:8000';
 
 // 백엔드에 보낼 최근 대화 개수 (길어질수록 LLM 토큰이 늘어남)
 const MAX_HISTORY = 10;
+// 회원 조회가 아닌 대화 응답은 대화 기록에 앞부분만 넣는다.
+const MAX_CHAT_REPLY_CHARS = 200;
+// 백엔드가 생성한 SQL을 담아 보내는 응답 헤더
+const SQL_HEADER = 'X-Generated-SQL';
 
 const WELCOME = {
   id: 'welcome',
@@ -31,9 +35,9 @@ class ServerError extends Error {}
 async function getServerError(res) {
   try {
     const data = await res.json();
-    return new ServerError(`오류가 발생했습니다: ${data.detail ?? res.status}`);
+    return new ServerError(data.detail ?? `오류가 발생했습니다. (${res.status})`);
   } catch {
-    return new ServerError(`오류가 발생했습니다: ${res.status}`);
+    return new ServerError(`오류가 발생했습니다. (${res.status})`);
   }
 }
 
@@ -66,10 +70,15 @@ export default function App() {
     inputRef.current?.focus();
 
     // 안내 문구와 오류 메시지는 대화 기록에서 제외
+    // 회원 목록이 담긴 긴 답변 대신, 그 답변을 만든 SQL만 보낸다. (후속 질문은 이전 SQL 조건만 알면 된다)
     const chatHistory = messages
       .filter(m => m.id !== WELCOME.id && !m.isError)
       .slice(-MAX_HISTORY)
-      .map(m => `${m.role === 'user' ? '사용자' : '챗봇'}: ${m.text}`);
+      .map(m => {
+        if (m.role === 'user') return `사용자: ${m.text}`;
+        if (m.sql && m.sql !== 'NO_QUERY') return `실행한 SQL: ${m.sql}`;
+        return `챗봇: ${m.text.slice(0, MAX_CHAT_REPLY_CHARS)}`;
+      });
 
     addMessage('user', text);
     // 빈 답변 말풍선을 먼저 만들고, 받은 청크를 이어 붙인다.
@@ -85,6 +94,8 @@ export default function App() {
         body: JSON.stringify({ question: text, chat_history: chatHistory }),
       });
       if (!res.ok) throw await getServerError(res);
+      const sql = res.headers.get(SQL_HEADER);
+      if (sql) updateMessage(botId, { sql: decodeURIComponent(sql) });
 
       const reader = res.body.getReader();
       const decoder = new TextDecoder();
