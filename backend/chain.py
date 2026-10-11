@@ -1,20 +1,31 @@
-import ast
+import logging
 import os
 import re
+import time
+from dataclasses import dataclass
 from functools import lru_cache
+from typing import Iterator
 
 from langchain_community.utilities import SQLDatabase
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from langchain_core.runnables import Runnable, RunnableLambda
+from sqlalchemy import text
+from sqlalchemy.exc import SQLAlchemyError
 
 from prompts import ANSWER_PROMPT, BASE_COLUMNS, CHAT_PROMPT, COLUMN_DESCRIPTIONS, FIELD_LABELS_TEXT, SQL_PROMPT
+
+logger = logging.getLogger("chatbot")
 
 # .env 의 GEMINI_MODEL 로 변경 가능
 DEFAULT_LLM_MODEL = "gemini-3.5-flash-lite"
 
-# 한 번에 보여줄 최대 회원 수 (SQL의 LIMIT)
+# 한 번에 보여줄 최대 회원 수
 MAX_ROWS = 20
+
+# 대화 기록은 최근 항목만, 항목마다 길이를 잘라서 프롬프트에 넣는다.
+MAX_HISTORY_ITEMS = 10
+MAX_HISTORY_ITEM_CHARS = 500
 
 # 회원 조회가 필요 없는 질문일 때 SQL 단계가 출력하는 값
 NO_QUERY = "NO_QUERY"
@@ -28,9 +39,19 @@ FORBIDDEN_SQL = re.compile(
     re.IGNORECASE,
 )
 
+# 사용자에게 보여줄 오류 문구 (원문은 서버 로그에만 남긴다)
+SQL_ERROR_MESSAGE = "질문을 이해하지 못했어요. 조금 다르게 물어봐 주세요."
+GENERAL_ERROR_MESSAGE = "일시적인 오류가 발생했어요. 잠시 후 다시 시도해 주세요."
+
 
 class InvalidQueryError(ValueError):
     """LLM이 실행할 수 없거나 허용되지 않는 SQL을 생성한 경우."""
+
+
+def user_error_message(error: Exception) -> str:
+    if isinstance(error, SQLAlchemyError):
+        return SQL_ERROR_MESSAGE
+    return GENERAL_ERROR_MESSAGE
 
 
 def init_database(db_uri: str) -> SQLDatabase:
@@ -39,12 +60,18 @@ def init_database(db_uri: str) -> SQLDatabase:
     return SQLDatabase.from_uri(db_uri, sample_rows_in_table_info=0)
 
 
+def fetch_rows(db: SQLDatabase, query: str, max_rows: int) -> list:
+    # db.run()은 결과 전체를 문자열로 돌려주므로, 엔진으로 직접 실행해 필요한 행만 dict 로 읽는다.
+    with db._engine.connect() as conn:
+        result = conn.execute(text(query))
+        return [dict(row._mapping) for row in result.fetchmany(max_rows)]
+
+
 def get_column_values(db: SQLDatabase) -> str:
     lines = []
     for column in CATEGORICAL_COLUMNS:
-        result = db.run(f"SELECT DISTINCT {column} FROM orgmember WHERE {column} IS NOT NULL ORDER BY {column}")
-        values = [row[0] for row in ast.literal_eval(result)] if result else []
-        lines.append(f"- {column}: {', '.join(map(str, values))}")
+        rows = fetch_rows(db, f"SELECT DISTINCT {column} FROM orgmember WHERE {column} IS NOT NULL ORDER BY {column}", 1000)
+        lines.append(f"- {column}: {', '.join(str(row[column]) for row in rows)}")
     return "\n".join(lines)
 
 
@@ -92,10 +119,16 @@ def prepare_rows(rows: list) -> list:
 
 
 def run_query(db: SQLDatabase, query: str) -> dict:
-    # db.run()은 결과를 문자열로 돌려주므로, 행 단위로 가공하기 위해 dict 목록을 받는다.
-    rows = prepare_rows(db._execute(query))
-    limit_note = (f"결과가 최대 개수({MAX_ROWS}개)만큼 조회되어 일부만 보여준 것일 수 있으니, 조건을 좁혀 다시 질문하도록 안내한다."
-                  if len(rows) >= MAX_ROWS else "결과 개수가 적으므로 일부만 보여준다는 안내는 하지 않는다.")
+    started = time.perf_counter()
+    # LIMIT 을 프롬프트에만 맡기지 않고 코드에서도 MAX_ROWS 개까지만 LLM에 넘긴다.
+    # 1개를 더 읽어서 결과가 잘렸는지 판단한다.
+    rows = fetch_rows(db, query, MAX_ROWS + 1)
+    truncated = len(rows) > MAX_ROWS
+    rows = prepare_rows(rows[:MAX_ROWS])
+    logger.info("DB 결과 %d행%s (%.0fms)", len(rows), " (잘림)" if truncated else "", (time.perf_counter() - started) * 1000)
+
+    limit_note = (f"조회 결과가 {MAX_ROWS}개를 넘어 일부만 보여주므로, 조건을 좁혀 다시 질문하도록 안내한다."
+                  if truncated else "일부만 보여준다는 안내는 하지 않는다.")
     return {"response": str(rows) if rows else "(결과 없음)", "row_count": len(rows), "limit_note": limit_note}
 
 
@@ -122,19 +155,33 @@ def validate_sql(query: str) -> str:
     return statement
 
 
+def format_history(chat_history: list) -> str:
+    # 클라이언트가 긴 기록을 보내더라도 프롬프트가 커지지 않도록 자른다.
+    items = [item[:MAX_HISTORY_ITEM_CHARS] for item in chat_history[-MAX_HISTORY_ITEMS:]]
+    return "\n".join(items)
+
+
+@dataclass
+class Chains:
+    sql: Runnable     # 질문 → SQL 또는 NO_QUERY
+    answer: Runnable  # 질문 + SQL 결과 → 답변
+    chat: Runnable    # 인사·잡담 → 답변 (DB 조회 없음)
+
+
 @lru_cache(maxsize=None)
-def build_chain(db: SQLDatabase):
+def build_chains(db: SQLDatabase) -> Chains:
     # 스키마와 저장 값 목록은 요청마다 바뀌지 않으므로 체인을 만들 때 한 번만 조회한다.
     sql_prompt = SQL_PROMPT.partial(
         dialect=db.dialect,
         schema=db.get_table_info(),
         column_descriptions=COLUMN_DESCRIPTIONS,
         column_values=get_column_values(db),
-        max_rows=str(MAX_ROWS),
+        # 결과가 잘렸는지 알 수 있도록 SQL에서는 1개 더 조회하게 한다. (run_query 참고)
+        sql_limit=str(MAX_ROWS + 1),
         no_query=NO_QUERY,
         base_columns=BASE_COLUMNS,
     )
-    answer_prompt = ANSWER_PROMPT.partial(max_rows=str(MAX_ROWS), field_labels=FIELD_LABELS_TEXT)
+    answer_prompt = ANSWER_PROMPT.partial(field_labels=FIELD_LABELS_TEXT)
 
     # main.py 의 load_dotenv() 이후에 읽도록 체인을 만들 때 조회한다.
     model = os.getenv("GEMINI_MODEL") or DEFAULT_LLM_MODEL
@@ -142,47 +189,35 @@ def build_chain(db: SQLDatabase):
     sql_llm = ChatGoogleGenerativeAI(model=model, temperature=0, max_output_tokens=2048)
     answer_llm = ChatGoogleGenerativeAI(model=model, temperature=0, max_output_tokens=4096)
 
-    sql_chain = (
-        sql_prompt
-        | sql_llm
-        | StrOutputParser()
-        | RunnableLambda(clean_sql)
-        | RunnableLambda(validate_sql)
+    return Chains(
+        sql=sql_prompt | sql_llm | StrOutputParser() | RunnableLambda(clean_sql) | RunnableLambda(validate_sql),
+        answer=answer_prompt | answer_llm | StrOutputParser(),
+        chat=CHAT_PROMPT | answer_llm | StrOutputParser(),
     )
 
-    # 회원 조회: SQL 실행 결과를 바탕으로 답변
-    db_answer_chain = (
-        # 컬럼명과 함께, 링크·주소를 미리 만들어 넘겨야 LLM이 빠뜨리거나 잘못 옮기지 않는다.
-        RunnableLambda(lambda v: {**v, **run_query(db, v["query"])})
-        | answer_prompt
-        | answer_llm
-        | StrOutputParser()
-    )
-    # 인사·잡담 등: DB를 조회하지 않고 대화로 답변
-    chat_chain = CHAT_PROMPT | answer_llm | StrOutputParser()
 
-    def route(inputs):
-        return chat_chain if inputs["query"] == NO_QUERY else db_answer_chain
+def prepare_answer(user_query: str, db: SQLDatabase, chat_history: list) -> tuple:
+    """SQL 생성·실행까지 마치고 (생성된 SQL, 답변 청크 iterator) 를 돌려준다.
 
-    return RunnablePassthrough.assign(query=sql_chain) | RunnableLambda(route)
+    여기서 난 오류는 답변을 보내기 전이므로 호출한 쪽에서 오류 응답으로 처리할 수 있다.
+    허용되지 않는 SQL이면 SQL 없이 안내 문구 하나만 돌려준다.
+    """
+    chains = build_chains(db)
+    inputs = {"question": user_query, "chat_history": format_history(chat_history)}
 
-
-def get_response(user_query: str, db: SQLDatabase, chat_history: list):
+    started = time.perf_counter()
     try:
-        return build_chain(db).invoke({
-            "question": user_query,
-            "chat_history": "\n".join(chat_history),
-        })
+        query = chains.sql.invoke(inputs)
     except InvalidQueryError as e:
-        return str(e)
+        logger.warning("질문=%r → 허용되지 않는 SQL: %s", user_query, e)
+        return None, iter([str(e)])
+    logger.info("질문=%r → SQL: %s (%.2fs)", user_query, query, time.perf_counter() - started)
+
+    if query == NO_QUERY:
+        return query, chains.chat.stream(inputs)
+    return query, chains.answer.stream({**inputs, "query": query, **run_query(db, query)})
 
 
-def stream_response(user_query: str, db: SQLDatabase, chat_history: list):
-    # SQL 생성·실행이 끝난 뒤 답변 LLM의 출력 토큰을 생성되는 대로 내보낸다.
-    try:
-        yield from build_chain(db).stream({
-            "question": user_query,
-            "chat_history": "\n".join(chat_history),
-        })
-    except InvalidQueryError as e:
-        yield str(e)
+def get_response(user_query: str, db: SQLDatabase, chat_history: list) -> tuple:
+    query, chunks = prepare_answer(user_query, db, chat_history)
+    return query, "".join(chunks)

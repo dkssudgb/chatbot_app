@@ -83,7 +83,7 @@ orgmember 테이블 컬럼 설명:
   (예: 선생님·교사·교수 → 교육자, 의사·간호사 → 의료인, 변호사·검사 → 법조인, 개발자·프로그래머 → IT 개발자)
 - 저장 값 목록에 없는 값(예: 없는 지역·이름)을 묻더라도 회원을 찾는 질문이면 {no_query} 가 아니라 SQL을 작성한다.
   결과가 비면 답변 단계에서 '없음'으로 안내한다.
-- 여러 회원이 나올 수 있으면 ORDER BY orgmem_name 으로 정렬하고 LIMIT {max_rows} 를 붙인다.
+- 여러 회원이 나올 수 있으면 ORDER BY orgmem_name 으로 정렬하고 LIMIT {sql_limit} 를 붙인다.
 - 회원 목록을 직접 요청한 경우(예: "회원 명단 보여줘")에만 조건 없는 조회를 한다.
   회원과 관계없는 말에 전체 회원을 조회하는 쿼리를 만들지 않는다.
 - SELECT '문장' 처럼 쿼리로 대답을 흉내 내지 않는다.
@@ -91,17 +91,17 @@ orgmember 테이블 컬럼 설명:
 
 예시:
 질문: 울산에서 일하는 선생님 찾아줘
-SQL: SELECT {base_columns}, jobtype FROM orgmember WHERE orgmem_area_work = '울산' AND jobtype = '교육자' ORDER BY orgmem_name LIMIT {max_rows};
+SQL: SELECT {base_columns}, jobtype FROM orgmember WHERE orgmem_area_work = '울산' AND jobtype = '교육자' ORDER BY orgmem_name LIMIT {sql_limit};
 질문: 제주에서 일하는 회원 찾아줘
-SQL: SELECT {base_columns} FROM orgmember WHERE orgmem_area_work = '제주' ORDER BY orgmem_name LIMIT {max_rows};
+SQL: SELECT {base_columns} FROM orgmember WHERE orgmem_area_work = '제주' ORDER BY orgmem_name LIMIT {sql_limit};
 질문: 30기 회원은 몇 명이야?
 SQL: SELECT COUNT(*) FROM orgmember WHERE orgmem_seqNum = 30;
 질문: 총동문회 회장이 누구야?
 SQL: SELECT {base_columns} FROM orgmember WHERE org_position = '회장';
 질문: 강구관 자택 주소 알려줘
-SQL: SELECT {base_columns}, orgmem_home_addr_zipcode, orgmem_home_addr1, orgmem_home_addr2 FROM orgmember WHERE orgmem_name LIKE '%강구관%' ORDER BY orgmem_name LIMIT {max_rows};
+SQL: SELECT {base_columns}, orgmem_home_addr_zipcode, orgmem_home_addr1, orgmem_home_addr2 FROM orgmember WHERE orgmem_name LIKE '%강구관%' ORDER BY orgmem_name LIMIT {sql_limit};
 질문: 회원 명단 보여줘
-SQL: SELECT {base_columns} FROM orgmember ORDER BY orgmem_name LIMIT {max_rows};
+SQL: SELECT {base_columns} FROM orgmember ORDER BY orgmem_name LIMIT {sql_limit};
 질문: 안녕
 SQL: {no_query}
 질문: 너는 뭘 할 수 있어?
@@ -109,7 +109,7 @@ SQL: {no_query}
 질문: 고마워!
 SQL: {no_query}
 
-대화 기록:
+대화 기록 (이전 질문과 그때 실행한 SQL. "그 중에", "그 사람" 같은 후속 질문은 이전 SQL의 조건을 이어서 쓴다):
 {chat_history}
 
 질문: {question}
