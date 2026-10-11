@@ -40,3 +40,6 @@ __pycache__/
 
 # typescript
 *.tsbuildinfo
+
+# sample database (python db/seed.py)
+*.db

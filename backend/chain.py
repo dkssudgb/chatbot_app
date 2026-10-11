@@ -5,8 +5,8 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
 
-def init_database(user: str, password: str, host: str, port: str, database: str) -> SQLDatabase:
-    db_uri = f"mysql+mysqlconnector://{user}:{password}@{host}:{port}/{database}?ssl_disabled=true"
+def init_database(db_uri: str) -> SQLDatabase:
+    # 예: sqlite:///../db/members.db, mysql+mysqlconnector://user:pw@host:3306/db
     return SQLDatabase.from_uri(db_uri)
 
 def get_sql_chain(db):

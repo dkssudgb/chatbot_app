@@ -1,4 +1,5 @@
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 import markdown2
 
@@ -36,15 +37,14 @@ load_dotenv()
 
 # API_KEY = os.getenv('GOOGLE_API_KEY')
 
-DATABASE_USER = os.getenv('User')
-DATABASE_PASSWORD = os.getenv('Password')
-DATABASE_HOST = os.getenv('Host')
-DATABASE_PORT = os.getenv('Port')
-DATABASE_NAME = os.getenv('Database')
+# 기본값: 저장소의 샘플 DB (python db/seed.py 로 생성)
+DEFAULT_DB_PATH = Path(__file__).resolve().parent.parent / "db" / "members.db"
+DATABASE_URL = os.getenv('DATABASE_URL') or f"sqlite:///{DEFAULT_DB_PATH}"
 
-# 데이터베이스
+# 데이터베이스 (앱 시작 시 한 번만 연결하고 재사용)
+db = init_database(DATABASE_URL)
+
 def get_db() -> SQLDatabase:
-    db = init_database(DATABASE_USER, DATABASE_PASSWORD, DATABASE_HOST, DATABASE_PORT, DATABASE_NAME)
     return db
 
 class User(BaseModel):
